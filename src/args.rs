@@ -10,7 +10,7 @@ pub struct Args {
     pub send: bool,
 
     /// The maximum size for each fragment
-    #[clap(short='f', long, env="PICCP_FRAGMENT_SIZE", default_value_t = 512)]
+    #[clap(short='f', long, env="PICCP_FRAGMENT_SIZE", default_value_t = 256)]
     pub fragment_size: u16,
 
     /// Receive data and write to stdout

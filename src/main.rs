@@ -1,5 +1,4 @@
 use std::io::{stderr, stdout, Write};
-use std::time::SystemTime;
 
 use clap::Parser;
 use crossterm::{
@@ -7,12 +6,11 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use crossterm::event::{EventStream, KeyModifiers};
+use crossterm::event::EventStream;
 use futures::StreamExt;
 use tokio::io::{stdin, Stdin};
 use tokio::select;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
-use tokio::sync::oneshot;
 use tui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
@@ -20,8 +18,9 @@ use tui::{
     widgets::{Block, Borders}
 };
 use tui::layout::Alignment;
-use tui::text::Text;
-use tui::widgets::Paragraph;
+use tui::style::{Color, Modifier, Style};
+use tui::text::{Span, Text};
+use tui::widgets::{Gauge, Paragraph};
 
 use crate::args::Args;
 use crate::camera::Camera;
@@ -41,7 +40,8 @@ mod codec;
 #[derive(Clone)]
 struct UiState {
     block_text: String,
-    size_text: String,
+    segment_offset: usize,
+    segment_count: usize,
     done: bool,
 }
 
@@ -49,7 +49,8 @@ impl UiState {
     fn new() -> Self {
         return Self {
             block_text: "".to_string(),
-            size_text: "".to_string(),
+            segment_offset: 0,
+            segment_count: 0,
             done: false
         }
     }
@@ -71,7 +72,8 @@ async fn next_message(ui_state: UiState, rx: &mut UnboundedReceiver<Message>) ->
                 UiState {
                     done: frame.is_done(),
                     block_text: Codec::encode(&frame),
-                    ..ui_state
+                    segment_offset: frame.get_segment_offset(),
+                    segment_count: frame.get_segment_count()
                 }
             },
             Message::AppendToOutput(frame) => {
@@ -79,7 +81,8 @@ async fn next_message(ui_state: UiState, rx: &mut UnboundedReceiver<Message>) ->
                 let data = frame.get_data();
                 lock.write(data).unwrap();
                 UiState {
-                    size_text: format!("{}", data.len()),
+                    segment_offset: frame.get_segment_offset(),
+                    segment_count: frame.get_segment_count(),
                     ..ui_state
                 }
             },
@@ -138,7 +141,7 @@ async fn main() {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .margin(1)
-                .constraints([Constraint::Percentage(90), Constraint::Percentage(10)].as_ref())
+                .constraints([Constraint::Min(5), Constraint::Max(3)].as_ref())
                 .split(size);
 
             let block = Block::default()
@@ -150,12 +153,16 @@ async fn main() {
             f.render_widget(graph, chunks[0]);
 
             let block = Block::default()
-                .title("info")
+                .title("progress")
                 .borders(Borders::ALL);
-            let graph = Paragraph::new(Text::from(format!("Size: {}", terminal_state.size_text)))
-                .alignment(Alignment::Center)
-                .block(block);
-            f.render_widget(graph, chunks[1]);
+            let progress = Gauge::default()
+                .block(block)
+                .gauge_style(Style::default().fg(Color::Green).bg(Color::Black).add_modifier(Modifier::ITALIC))
+                .label(Span::from(
+                    format!("Segment {}/{}", terminal_state.segment_offset + 1, terminal_state.segment_count)
+                ))
+                .ratio((terminal_state.segment_offset + 1) as f64 / terminal_state.segment_count as f64);
+            f.render_widget(progress, chunks[1]);
 
         }).unwrap();
 

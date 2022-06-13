@@ -15,7 +15,7 @@ tokio-util = {version="0.7.3", features=["codec"]}
 futures = "0.3.21"
 bytes = "1.1.0"
 clap = {version="3.1.18", features = ["derive","env","cargo"]}
-nokhwa = {version="0.9.4", features = ["input-v4l", "input-uvc"]}
+nokhwa = {version="0.9.4", features = ["input-v4l", "input-uvc","input-avfoundation","input-msmf"]}
 qrcode = "0.12.0"
 bardecoder = "0.3.0"
 image = "0.23"

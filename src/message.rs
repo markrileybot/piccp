@@ -1,5 +1,3 @@
-use crossterm::event::KeyEvent;
-
 use crate::Frame;
 
 #[derive(Debug, Clone)]

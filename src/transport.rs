@@ -3,7 +3,7 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio_util::codec::{BytesCodec, FramedRead};
 
 use crate::{Frame, StreamExt};
-use crate::frame::{FRAME_TYPE_CTS, FRAME_TYPE_DATA, FRAME_TYPE_DONE};
+use crate::frame::{FRAME_TYPE_CTS, FRAME_TYPE_SEGMENT, FRAME_TYPE_DONE};
 use crate::message::Message;
 
 pub trait InputFactory: Send {
@@ -40,7 +40,7 @@ impl Transport {
     }
 
     pub fn send(&self) {
-        self.receiver_tx.send(Message::SendFrame(0)).unwrap();
+        self.sender_tx.send(Message::SendFrame(0)).unwrap();
     }
 
     async fn start_receiver(frame_handler: UnboundedSender<Message>, frame_sender: UnboundedSender<Message>) -> UnboundedSender<Message> {
@@ -56,15 +56,15 @@ impl Transport {
                     Message::ReceiveFrame(data) => {
                         let frag_type = data.get_type();
                         if frag_type == FRAME_TYPE_CTS {
-                            expected_offset = data.get_offset();
+                            expected_offset = data.get_segment_offset();
                             frame_sender.send(Message::SendFrame(expected_offset)).unwrap();
                         } else if frag_type == FRAME_TYPE_DONE {
                             frame_handler.send(Message::WriteData(Frame::new_done())).unwrap();
                             frame_handler.send(Message::Donzo).unwrap();
                             receiver_tx.send(Message::Donzo).unwrap();
                             frame_sender.send(Message::Donzo).unwrap();
-                        } else if frag_type == FRAME_TYPE_DATA {
-                            let offset = data.get_offset();
+                        } else if frag_type == FRAME_TYPE_SEGMENT {
+                            let offset = data.get_segment_offset();
                             if expected_offset == offset {
                                 frame_handler.send(Message::AppendToOutput(data)).unwrap();
                                 receiver_tx.send(Message::ReceiveNextFrame).unwrap();
@@ -97,6 +97,7 @@ impl Transport {
                 let next = reader.next().await.expect("Failed to get bytes");
                 let data = next.expect("Error reading bytes");
                 let mut chunks = data.chunks(fragment_size as usize);
+                let num_chunks = chunks.len();
                 loop {
                     match rx.recv().await.expect("No messages") {
                         Message::SendFrame(offset) => {
@@ -105,7 +106,7 @@ impl Transport {
                                     frame_handler.send(Message::WriteData(Frame::new_done())).unwrap();
                                 }
                                 Some(data) => {
-                                    frame_handler.send(Message::WriteData(Frame::new_data(offset, data))).unwrap();
+                                    frame_handler.send(Message::WriteData(Frame::new_segment(offset, num_chunks, data))).unwrap();
                                 }
                             }
                         }
