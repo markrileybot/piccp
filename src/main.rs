@@ -69,11 +69,19 @@ async fn next_message(ui_state: UiState, rx: &mut UnboundedReceiver<Message>) ->
     return if let Some(message) = rx.recv().await {
         match message {
             Message::WriteData(frame) => {
-                UiState {
-                    done: frame.is_done(),
-                    block_text: Codec::encode(&frame),
-                    segment_offset: frame.get_segment_offset(),
-                    segment_count: frame.get_segment_count()
+                if frame.is_segment() {
+                    UiState {
+                        done: frame.is_done(),
+                        block_text: Codec::encode(&frame),
+                        segment_offset: frame.get_segment_offset(),
+                        segment_count: frame.get_segment_count()
+                    }
+                } else {
+                    UiState {
+                        done: frame.is_done(),
+                        block_text: Codec::encode(&frame),
+                        ..ui_state
+                    }
                 }
             },
             Message::AppendToOutput(frame) => {
@@ -161,7 +169,7 @@ async fn main() {
                 .label(Span::from(
                     format!("Segment {}/{}", terminal_state.segment_offset + 1, terminal_state.segment_count)
                 ))
-                .ratio((terminal_state.segment_offset + 1) as f64 / terminal_state.segment_count as f64);
+                .ratio(if terminal_state.segment_count > 0 {(terminal_state.segment_offset + 1) as f64 / terminal_state.segment_count as f64} else {0f64});
             f.render_widget(progress, chunks[1]);
 
         }).unwrap();

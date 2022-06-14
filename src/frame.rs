@@ -69,7 +69,7 @@ impl Frame {
     }
 
     pub fn get_segment_count(&self) -> usize {
-        return u32::from_be_bytes(self.encoded[9..13].try_into().unwrap()) as usize;
+        u32::from_be_bytes(self.encoded[9..13].try_into().unwrap()) as usize
     }
 
     pub fn get_data(&self) -> &[u8] {
@@ -78,6 +78,14 @@ impl Frame {
 
     pub fn is_done(&self) -> bool {
         return self.get_type() == FRAME_TYPE_DONE;
+    }
+
+    pub fn is_segment(&self) -> bool {
+        return self.get_type() == FRAME_TYPE_SEGMENT;
+    }
+
+    pub fn is_cts(&self) -> bool {
+        return self.get_type() == FRAME_TYPE_CTS;
     }
 }
 
