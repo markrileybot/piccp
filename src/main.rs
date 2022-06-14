@@ -120,7 +120,7 @@ async fn main() {
     }
 
     enable_raw_mode().unwrap();
-    let mut stdout = stdout();
+    let mut stdout = stderr();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture).unwrap();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).unwrap();
