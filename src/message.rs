@@ -8,5 +8,6 @@ pub enum Message {
 
     WriteData(Frame),
     AppendToOutput(Frame),
+    Log(String),
     Donzo
 }

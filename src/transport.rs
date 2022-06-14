@@ -2,8 +2,7 @@ use tokio::io::AsyncRead;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio_util::codec::{BytesCodec, FramedRead};
 
-use crate::{Frame, StreamExt};
-use crate::frame::{FRAME_TYPE_CTS, FRAME_TYPE_SEGMENT, FRAME_TYPE_DONE};
+use crate::{Frame, Log, StreamExt};
 use crate::message::Message;
 
 pub trait InputFactory: Send {
@@ -19,12 +18,13 @@ pub struct Transport {
 
 impl Transport {
     pub async fn new<I: 'static>(frame_handler: UnboundedSender<Message>,
+                        log: Log,
                         input_factory: I,
                         fragment_size: u16) -> Self
         where I: InputFactory
     {
         let sender_tx = Self::start_sender(frame_handler.clone(), input_factory, fragment_size).await;
-        let receiver_tx = Self::start_receiver(frame_handler, sender_tx.clone()).await;
+        let receiver_tx = Self::start_receiver(frame_handler, log,sender_tx.clone()).await;
         return Self {
             sender_tx,
             receiver_tx
@@ -43,7 +43,9 @@ impl Transport {
         self.sender_tx.send(Message::SendFrame(0)).unwrap();
     }
 
-    async fn start_receiver(frame_handler: UnboundedSender<Message>, frame_sender: UnboundedSender<Message>) -> UnboundedSender<Message> {
+    async fn start_receiver(frame_handler: UnboundedSender<Message>,
+                            log: Log,
+                            frame_sender: UnboundedSender<Message>) -> UnboundedSender<Message> {
         let (tx, mut rx) = unbounded_channel();
         let receiver_tx = tx.clone();
         tokio::spawn(async move {
@@ -54,30 +56,30 @@ impl Transport {
                         frame_handler.send(Message::WriteData(Frame::new_cts(expected_offset))).unwrap();
                     }
                     Message::ReceiveFrame(data) => {
-                        let frag_type = data.get_type();
-                        if frag_type == FRAME_TYPE_CTS {
+                        if data.is_cts() {
                             expected_offset = data.get_segment_offset();
                             frame_sender.send(Message::SendFrame(expected_offset)).unwrap();
-                        } else if frag_type == FRAME_TYPE_DONE {
+                        } else if data.is_done() {
                             frame_handler.send(Message::WriteData(Frame::new_done())).unwrap();
                             frame_handler.send(Message::Donzo).unwrap();
                             receiver_tx.send(Message::Donzo).unwrap();
                             frame_sender.send(Message::Donzo).unwrap();
-                        } else if frag_type == FRAME_TYPE_SEGMENT {
+                        } else if data.is_segment() {
                             let offset = data.get_segment_offset();
                             if expected_offset == offset {
                                 frame_handler.send(Message::AppendToOutput(data)).unwrap();
                                 receiver_tx.send(Message::ReceiveNextFrame).unwrap();
                                 expected_offset += 1;
                             } else {
-                                panic!("Missed fragment at offset {}", expected_offset);
+                                log.log(format!("Unexpected segment {}", offset));
                             }
                         }
                     }
                     Message::Donzo => {
                         return;
                     }
-                    _ => {}
+                    _ => {
+                    }
                 }
             }
         });
