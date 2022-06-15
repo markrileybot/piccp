@@ -8,5 +8,5 @@ Screenshots
 
 Click to view.
 
-[![sender](/doc/screenshots/sender.png?raw=true)]
-[![receiver](/doc/screenshots/receiver.png?raw=true)]
+![sender](/doc/screenshots/sender.png?raw=true)
+![receiver](/doc/screenshots/receiver.png?raw=true)
