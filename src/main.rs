@@ -1,4 +1,5 @@
-use std::io::{stderr, Stderr, stdout, Write};
+use std::fs::{File, metadata};
+use std::io::{Error, ErrorKind, Read, Result, Seek, SeekFrom, stderr, Stderr, stdin, stdout, Write};
 
 use clap::Parser;
 use crossterm::{
@@ -8,7 +9,6 @@ use crossterm::{
 };
 use crossterm::event::EventStream;
 use futures::StreamExt;
-use tokio::io::{stdin, Stdin};
 use tokio::select;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use tui::{
@@ -24,11 +24,11 @@ use tui::widgets::{Gauge, Paragraph};
 
 use crate::args::Args;
 use crate::camera::Camera;
-use crate::codec::Codec;
+use crate::codec::{Decoder, Encoder};
 use crate::frame::Frame;
 use crate::log::Log;
 use crate::message::Message;
-use crate::transport::{InputFactory, Transport};
+use crate::transport::{Input, InputFactory, Transport};
 
 mod args;
 mod transport;
@@ -60,16 +60,65 @@ impl UiState {
     }
 }
 
-struct StdinInputFactory {
+struct StdinInput {
+    next_offset: usize
 }
-impl InputFactory for StdinInputFactory {
-    type Output = Stdin;
-    fn create_input(&self) -> Self::Output {
-        return stdin();
+impl Input for StdinInput {
+    fn read_segment(&mut self, offset: usize, buf: &mut [u8]) -> Result<usize> {
+        if offset != self.next_offset {
+            return Result::Err(Error::from(ErrorKind::InvalidData));
+        }
+        let stdin = stdin();
+        let mut lock = stdin.lock();
+        let result = lock.read(buf);
+        self.next_offset += 1;
+        return result;
     }
 }
 
-async fn next_message(ui_state: UiState, rx: &mut UnboundedReceiver<Message>) -> UiState {
+struct StdinInputFactory {
+}
+impl InputFactory for StdinInputFactory {
+    type InputType = StdinInput;
+    fn create_input(&self) -> Self::InputType {
+        return StdinInput {next_offset: 0};
+    }
+}
+
+struct FileInput {
+    file: File,
+    size: usize
+}
+impl FileInput {
+    fn new(path: String) -> Self {
+        return Self {
+            file: File::open(path.clone()).unwrap(),
+            size: metadata(path).unwrap().len() as usize
+        };
+    }
+}
+impl Input for FileInput {
+    fn size(&self) -> Option<usize> {
+        return Some(self.size);
+    }
+    fn read_segment(&mut self, offset: usize, buf: &mut [u8]) -> Result<usize> {
+        self.file.seek(SeekFrom::Start((offset * buf.len()) as u64)).unwrap();
+        return self.file.read(buf);
+    }
+}
+
+struct FileInputFactory {
+    path: String
+}
+impl InputFactory for FileInputFactory{
+    type InputType = FileInput;
+    fn create_input(&self) -> Self::InputType {
+        return FileInput::new(self.path.clone());
+    }
+}
+
+
+async fn next_message(ui_state: UiState, encoder: &Encoder, rx: &mut UnboundedReceiver<Message>) -> UiState {
     return if let Some(message) = rx.recv().await {
         match message {
             Message::Log(log) => {
@@ -81,24 +130,21 @@ async fn next_message(ui_state: UiState, rx: &mut UnboundedReceiver<Message>) ->
             Message::WriteData(frame) => {
                 if frame.is_segment() {
                     UiState {
-                        done: frame.is_done(),
-                        block_text: Codec::encode(&frame),
+                        block_text: encoder.encode(&frame),
                         segment_offset: frame.get_segment_offset(),
                         segment_count: frame.get_segment_count(),
-                        message: format!("Sending segment #{}", frame.get_segment_offset()),
+                        message: format!("Sending {}b segment #{}", frame.get_data().len(), frame.get_segment_offset()),
                         ..ui_state
                     }
                 } else if frame.is_cts() {
                     UiState {
-                        done: frame.is_done(),
-                        block_text: Codec::encode(&frame),
+                        block_text: encoder.encode(&frame),
                         message: format!("Clear to send segment #{}", frame.get_segment_offset()),
                         ..ui_state
                     }
                 } else {
                     UiState {
-                        done: frame.is_done(),
-                        block_text: Codec::encode(&frame),
+                        block_text: encoder.encode(&frame),
                         message: "Done".to_string(),
                         ..ui_state
                     }
@@ -155,13 +201,19 @@ fn update_ui(terminal: &mut Terminal<CrosstermBackend<Stderr>>, terminal_state: 
             .block(Block::default().title("piccp").borders(Borders::ALL));
         f.render_widget(graph, main_chunks[0]);
 
-        let progress = Gauge::default()
+        let segment_num = terminal_state.segment_offset + 1;
+        let mut progress = Gauge::default()
             .block(Block::default().title("progress").borders(Borders::ALL))
-            .gauge_style(Style::default().fg(Color::Green).bg(Color::Black).add_modifier(Modifier::ITALIC))
-            .label(Span::from(
-                format!("Segment {}/{}", terminal_state.segment_offset + 1, terminal_state.segment_count)
-            ))
-            .ratio(if terminal_state.segment_count > 0 { (terminal_state.segment_offset + 1) as f64 / terminal_state.segment_count as f64 } else { 0f64 });
+            .gauge_style(Style::default().fg(Color::Green).bg(Color::Black).add_modifier(Modifier::ITALIC));
+        if terminal_state.segment_count >= segment_num {
+            progress = progress
+                .label(Span::from(format!("Segment {}/{}", segment_num, terminal_state.segment_count)))
+                .ratio(segment_num as f64 / terminal_state.segment_count as f64);
+        } else {
+            progress = progress
+                .label(Span::from(format!("Segment {}", segment_num)))
+                .ratio(0f64);
+        }
         f.render_widget(progress, bot_chunks[0]);
 
         let graph = Paragraph::new(Text::from(terminal_state.message))
@@ -176,10 +228,15 @@ async fn main() {
 
     let (tx, mut rx) = unbounded_channel();
     let log = Log::new(tx.clone());
-    let transport = Transport::new(tx.clone(), log.clone(), StdinInputFactory{}, args.fragment_size).await;
-    let _camera = Camera::new(transport.clone(), log);
+    let transport = if args.input_file.is_empty() {
+        Transport::new(tx.clone(), log.clone(), StdinInputFactory{}, args.fragment_size).await
+    } else {
+        Transport::new(tx.clone(), log.clone(), FileInputFactory{path: args.input_file.clone()}, args.fragment_size).await
+    };
+    let encoder = Encoder::new(args.scale_width as u32, args.scale_height as u32, !args.hide_quiet_zone);
+    let _camera = Camera::new(transport.clone(), Decoder::new(log));
 
-    if !args.send {
+    if !args.is_sender() {
         transport.receive();
     }
 
@@ -195,7 +252,7 @@ async fn main() {
     loop {
         let current_ui_state = ui_state.clone();
         ui_state = select! {
-            res0 = next_message(current_ui_state.clone(), &mut rx) => res0,
+            res0 = next_message(current_ui_state.clone(), &encoder, &mut rx) => res0,
             res1 = next_input(current_ui_state, &mut event_stream) => res1,
         };
 

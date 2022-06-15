@@ -1,34 +1,48 @@
 use image::{DynamicImage, ImageBuffer, Rgb};
 use qrcode::{EcLevel, QrCode};
-use quircs::{Quirc};
+use quircs::Quirc;
 
 use crate::Frame;
 use crate::log::Log;
 
-pub struct Codec {
+pub struct Encoder {
+    width: u32,
+    height: u32,
+    quiet_zone: bool
+}
+
+impl Encoder {
+    pub fn new(width: u32, height: u32, quiet_zone: bool) -> Self {
+        return Self {
+            width,
+            height,
+            quiet_zone
+        }
+    }
+    pub fn encode(&self, frame: &Frame) -> String {
+        let code = QrCode::with_error_correction_level(frame, EcLevel::L)
+            .expect("Failed to generate qrcode!");
+        return code.render()
+            .quiet_zone(self.quiet_zone)
+            .module_dimensions(self.width, self.height)
+            .light_color('█')
+            .dark_color(' ')
+            .build();
+    }
+}
+
+pub struct Decoder {
     expected_frame: usize,
     log: Log,
     decoder: Quirc
 }
-
-impl Codec {
+impl Decoder {
     pub fn new(log: Log) -> Self {
         return Self {
             expected_frame: 0,
             decoder: Quirc::default(),
             log,
         }
-    }
-
-    pub fn encode(frame: &Frame) -> String {
-        let code = QrCode::with_error_correction_level(frame, EcLevel::L)
-            .expect("Failed to generate qrcode!");
-        return code.render()
-            .quiet_zone(true)
-            .module_dimensions(4, 2)
-            .light_color('█')
-            .dark_color(' ')
-            .build();
     }
 
     pub fn decode(&mut self, image: ImageBuffer<Rgb<u8>, Vec<u8>>) -> Vec<Frame> {

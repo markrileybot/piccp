@@ -3,8 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::mpsc::unbounded_channel;
 
-use crate::codec::Codec;
-use crate::log::Log;
+use crate::codec::Decoder;
 use crate::Transport;
 
 pub struct Camera {
@@ -12,7 +11,7 @@ pub struct Camera {
 }
 
 impl Camera {
-    pub fn new(transport: Transport, log: Log) -> Self {
+    pub fn new(transport: Transport, mut codec: Decoder) -> Self {
         let done = Arc::new(AtomicBool::new(false));
         let my_done = done.clone();
         let (tx, mut rx) = unbounded_channel();
@@ -22,7 +21,6 @@ impl Camera {
                 None,
             ).expect("Failed to get camera");
             camera.open_stream().expect("Failed to open stream");
-            let mut codec = Codec::new(log.clone());
             loop {
                 let image = camera.frame().unwrap();
                 let result = codec.decode(image);

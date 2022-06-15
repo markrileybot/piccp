@@ -1,13 +1,16 @@
-use tokio::io::AsyncRead;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
-use tokio_util::codec::{BytesCodec, FramedRead};
 
-use crate::{Frame, Log, StreamExt};
+use crate::{Frame, Log};
 use crate::message::Message;
 
+pub trait Input: Send {
+    fn size(&self) -> Option<usize> {return None;}
+    fn read_segment(&mut self, offset: usize, buf: &mut [u8]) -> std::io::Result<usize>;
+}
+
 pub trait InputFactory: Send {
-    type Output: AsyncRead + Unpin + Send;
-    fn create_input(&self) -> Self::Output;
+    type InputType: Input;
+    fn create_input(&self) -> Self::InputType;
 }
 
 #[derive(Clone)]
@@ -93,30 +96,29 @@ impl Transport {
     {
         let (tx, mut rx) = unbounded_channel();
         tokio::spawn(async move {
-            let mut reader = FramedRead::new(input_factory.create_input(), BytesCodec::new());
-
+            let mut input = input_factory.create_input();
+            let mut buf = vec![0u8; fragment_size as usize];
+            let num_segments = match input.size() {
+                None => 0,
+                Some(s) => s / fragment_size as usize,
+            };
             loop {
-                let next = reader.next().await.expect("Failed to get bytes");
-                let data = next.expect("Error reading bytes");
-                let mut chunks = data.chunks(fragment_size as usize);
-                let num_chunks = chunks.len();
-                loop {
-                    match rx.recv().await.expect("No messages") {
-                        Message::SendFrame(offset) => {
-                            match chunks.nth(offset) {
-                                None => {
-                                    frame_handler.send(Message::WriteData(Frame::new_done())).unwrap();
-                                }
-                                Some(data) => {
-                                    frame_handler.send(Message::WriteData(Frame::new_segment(offset, num_chunks, data))).unwrap();
-                                }
+                match rx.recv().await.expect("No messages") {
+                    Message::SendFrame(offset) => {
+                        match input.read_segment(offset, &mut buf) {
+                            Ok(size) => {
+                                frame_handler.send(Message::WriteData(Frame::new_segment(offset, num_segments, &buf[0..size]))).unwrap();
+                            }
+                            Err(_) => {
+                                frame_handler.send(Message::WriteData(Frame::new_done())).unwrap();
+                                break;
                             }
                         }
-                        Message::Donzo => {
-                            return;
-                        }
-                        _ => {}
                     }
+                    Message::Donzo => {
+                        return;
+                    }
+                    _ => {}
                 }
             }
         });
