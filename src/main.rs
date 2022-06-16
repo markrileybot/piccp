@@ -28,7 +28,7 @@ use crate::codec::{Decoder, Encoder};
 use crate::frame::Frame;
 use crate::log::Log;
 use crate::message::Message;
-use crate::transport::{Input, InputFactory, Transport};
+use crate::transport::{SegmentSource, SegmentSourceFactory, Transport};
 
 mod args;
 mod transport;
@@ -60,10 +60,10 @@ impl UiState {
     }
 }
 
-struct StdinInput {
+struct StdinSource {
     next_offset: usize
 }
-impl Input for StdinInput {
+impl SegmentSource for StdinSource {
     fn read_segment(&mut self, offset: usize, buf: &mut [u8]) -> Result<usize> {
         if offset != self.next_offset {
             return Result::Err(Error::from(ErrorKind::InvalidData));
@@ -76,20 +76,19 @@ impl Input for StdinInput {
     }
 }
 
-struct StdinInputFactory {
-}
-impl InputFactory for StdinInputFactory {
-    type InputType = StdinInput;
-    fn create_input(&self) -> Self::InputType {
-        return StdinInput {next_offset: 0};
+struct StdinSourceFactory;
+impl SegmentSourceFactory for StdinSourceFactory {
+    type SegmentSourceType = StdinSource;
+    fn create_segment_source(&self) -> Self::SegmentSourceType {
+        return StdinSource {next_offset: 0};
     }
 }
 
-struct FileInput {
+struct FileSource {
     file: File,
     size: usize
 }
-impl FileInput {
+impl FileSource {
     fn new(path: String) -> Self {
         return Self {
             file: File::open(path.clone()).unwrap(),
@@ -97,7 +96,7 @@ impl FileInput {
         };
     }
 }
-impl Input for FileInput {
+impl SegmentSource for FileSource {
     fn size(&self) -> Option<usize> {
         return Some(self.size);
     }
@@ -107,13 +106,13 @@ impl Input for FileInput {
     }
 }
 
-struct FileInputFactory {
+struct FileSourceFactory {
     path: String
 }
-impl InputFactory for FileInputFactory{
-    type InputType = FileInput;
-    fn create_input(&self) -> Self::InputType {
-        return FileInput::new(self.path.clone());
+impl SegmentSourceFactory for FileSourceFactory {
+    type SegmentSourceType = FileSource;
+    fn create_segment_source(&self) -> Self::SegmentSourceType {
+        return FileSource::new(self.path.clone());
     }
 }
 
@@ -229,9 +228,9 @@ async fn main() {
     let (tx, mut rx) = unbounded_channel();
     let log = Log::new(tx.clone());
     let transport = if args.input_file.is_empty() {
-        Transport::new(tx.clone(), log.clone(), StdinInputFactory{}, args.fragment_size).await
+        Transport::new(tx.clone(), log.clone(), StdinSourceFactory {}, args.fragment_size).await
     } else {
-        Transport::new(tx.clone(), log.clone(), FileInputFactory{path: args.input_file.clone()}, args.fragment_size).await
+        Transport::new(tx.clone(), log.clone(), FileSourceFactory {path: args.input_file.clone()}, args.fragment_size).await
     };
     let encoder = Encoder::new(args.scale_width as u32, args.scale_height as u32, !args.hide_quiet_zone);
     let _camera = Camera::new(transport.clone(), Decoder::new(log));

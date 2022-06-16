@@ -32,14 +32,12 @@ impl Encoder {
 }
 
 pub struct Decoder {
-    expected_frame: usize,
     log: Log,
     decoder: Quirc
 }
 impl Decoder {
     pub fn new(log: Log) -> Self {
         return Self {
-            expected_frame: 0,
             decoder: Quirc::default(),
             log,
         }
@@ -55,13 +53,7 @@ impl Decoder {
                 Ok(data) => {
                     match data.decode() {
                         Ok(data) => {
-                            let frame = Frame::new(data.payload);
-                            if frame.get_sequence() == self.expected_frame {
-                                self.expected_frame += 1;
-                                result.push(frame);
-                            } else {
-                                self.log.log(format!("Unexpected frame {}", frame.get_sequence()));
-                            }
+                            result.push(Frame::new(data.payload));
                         }
                         Err(err) => {
                             self.log.log(format!("{:?}", err));

@@ -18,11 +18,11 @@ pub struct Args {
     pub fragment_size: u16,
 
     /// The width of a block
-    #[clap(short='W', long, env="PICCP_BLOCK_WIDTH", default_value_t = 2)]
+    #[clap(short='W', long, env="PICCP_BLOCK_WIDTH", default_value_t = 4)]
     pub scale_width: u8,
 
     /// The height of a block
-    #[clap(short='H', long, env="PICCP_BLOCK_HEIGHT", default_value_t = 1)]
+    #[clap(short='H', long, env="PICCP_BLOCK_HEIGHT", default_value_t = 2)]
     pub scale_height: u8,
 
     /// Hide quiet zone?

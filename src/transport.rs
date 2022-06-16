@@ -3,14 +3,14 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use crate::{Frame, Log};
 use crate::message::Message;
 
-pub trait Input: Send {
+pub trait SegmentSource: Send {
     fn size(&self) -> Option<usize> {return None;}
     fn read_segment(&mut self, offset: usize, buf: &mut [u8]) -> std::io::Result<usize>;
 }
 
-pub trait InputFactory: Send {
-    type InputType: Input;
-    fn create_input(&self) -> Self::InputType;
+pub trait SegmentSourceFactory: Send {
+    type SegmentSourceType: SegmentSource;
+    fn create_segment_source(&self) -> Self::SegmentSourceType;
 }
 
 #[derive(Clone)]
@@ -21,12 +21,12 @@ pub struct Transport {
 
 impl Transport {
     pub async fn new<I: 'static>(frame_handler: UnboundedSender<Message>,
-                        log: Log,
-                        input_factory: I,
-                        fragment_size: u16) -> Self
-        where I: InputFactory
+                                 log: Log,
+                                 segment_source_factory: I,
+                                 fragment_size: u16) -> Self
+        where I: SegmentSourceFactory
     {
-        let sender_tx = Self::start_sender(frame_handler.clone(), input_factory, fragment_size).await;
+        let sender_tx = Self::start_sender(frame_handler.clone(), segment_source_factory, fragment_size).await;
         let receiver_tx = Self::start_receiver(frame_handler, log,sender_tx.clone()).await;
         return Self {
             sender_tx,
@@ -52,30 +52,36 @@ impl Transport {
         let (tx, mut rx) = unbounded_channel();
         let receiver_tx = tx.clone();
         tokio::spawn(async move {
-            let mut expected_offset: usize = 0;
+            let mut expected_segment_offset: usize = 0;
+            let mut expected_frame_sequence: usize = 0;
             loop {
                 match rx.recv().await.expect("No messages") {
                     Message::ReceiveNextFrame => {
-                        frame_handler.send(Message::WriteData(Frame::new_cts(expected_offset))).unwrap();
+                        frame_handler.send(Message::WriteData(Frame::new_cts(expected_segment_offset))).unwrap();
                     }
-                    Message::ReceiveFrame(data) => {
-                        if data.is_cts() {
-                            expected_offset = data.get_segment_offset();
-                            frame_sender.send(Message::SendFrame(expected_offset)).unwrap();
-                        } else if data.is_done() {
-                            frame_handler.send(Message::WriteData(Frame::new_done())).unwrap();
-                            frame_handler.send(Message::Donzo).unwrap();
-                            receiver_tx.send(Message::Donzo).unwrap();
-                            frame_sender.send(Message::Donzo).unwrap();
-                        } else if data.is_segment() {
-                            let offset = data.get_segment_offset();
-                            if expected_offset == offset {
-                                frame_handler.send(Message::AppendToOutput(data)).unwrap();
-                                receiver_tx.send(Message::ReceiveNextFrame).unwrap();
-                                expected_offset += 1;
-                            } else {
-                                log.log(format!("Unexpected segment {}", offset));
+                    Message::ReceiveFrame(frame) => {
+                        if frame.get_sequence() == expected_frame_sequence {
+                            expected_frame_sequence += 1;
+                            if frame.is_cts() {
+                                expected_segment_offset = frame.get_segment_offset();
+                                frame_sender.send(Message::SendFrame(expected_segment_offset)).unwrap();
+                            } else if frame.is_done() {
+                                frame_handler.send(Message::WriteData(Frame::new_done())).unwrap();
+                                frame_handler.send(Message::Donzo).unwrap();
+                                receiver_tx.send(Message::Donzo).unwrap();
+                                frame_sender.send(Message::Donzo).unwrap();
+                            } else if frame.is_segment() {
+                                let offset = frame.get_segment_offset();
+                                if expected_segment_offset == offset {
+                                    frame_handler.send(Message::AppendToOutput(frame)).unwrap();
+                                    receiver_tx.send(Message::ReceiveNextFrame).unwrap();
+                                    expected_segment_offset += 1;
+                                } else {
+                                    log.log(format!("Unexpected segment {}", offset));
+                                }
                             }
+                        } else {
+                            log.log(format!("Unexpected frame {}", frame.get_sequence()));
                         }
                     }
                     Message::Donzo => {
@@ -90,13 +96,13 @@ impl Transport {
     }
 
     async fn start_sender<I: 'static>(frame_handler: UnboundedSender<Message>,
-                             input_factory: I,
-                             fragment_size: u16) -> UnboundedSender<Message>
-        where I: InputFactory
+                                      segment_source_factory: I,
+                                      fragment_size: u16) -> UnboundedSender<Message>
+        where I: SegmentSourceFactory
     {
         let (tx, mut rx) = unbounded_channel();
         tokio::spawn(async move {
-            let mut input = input_factory.create_input();
+            let mut input = segment_source_factory.create_segment_source();
             let mut buf = vec![0u8; fragment_size as usize];
             let num_segments = match input.size() {
                 None => 0,
